@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+langchain
+langgraph
+pydantic
+freqtrade
+pandas
+numpy
+langchain-openai
+python-dotenv
+streamlit
+requests
