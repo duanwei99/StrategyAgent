@@ -3,8 +3,25 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 import os
 
-# 加载环境变量
-load_dotenv()
+# 加载环境变量（支持不同编码）
+def load_env_with_fallback():
+    """尝试使用不同编码加载 .env 文件"""
+    encodings = ['utf-8', 'utf-8-sig', 'gbk', 'gb2312', 'latin-1']
+    
+    for encoding in encodings:
+        try:
+            load_dotenv(encoding=encoding)
+            return True
+        except (UnicodeDecodeError, Exception):
+            continue
+    
+    try:
+        load_dotenv()
+        return True
+    except:
+        return False
+
+load_env_with_fallback()
 
 from ..agent.graph import create_graph
 from ..agent.state import AgentState
@@ -31,20 +48,22 @@ async def generate_strategy(request: StrategyRequest):
     print(f"Received request: {request.strategy_idea}")
     
     # 初始化状态
-    initial_state = AgentState(
-        user_requirement=request.strategy_idea,
-        current_code=None,
-        iteration_count=0,
-        backtest_results=None,
-        error_logs=[],
-        is_satisfactory=False
-    )
+    initial_state = {
+        "user_requirement": request.strategy_idea,
+        "current_code": None,
+        "iteration_count": 0,
+        "backtest_results": None,
+        "error_logs": [],
+        "is_satisfactory": False
+    }
     
     try:
         # 运行图
-        # invoke 是同步/异步取决于配置，langgraph 的 compile() 返回的 app 通常支持 invoke
-        # 如果 graph 内部有 async 节点，应该使用 ainvoke
-        final_state = await agent_graph.ainvoke(initial_state)
+        # LangGraph 的节点是同步的，但是我们可以在 executor 中运行
+        import asyncio
+        final_state = await asyncio.get_event_loop().run_in_executor(
+            None, agent_graph.invoke, initial_state
+        )
         
         return {
             "status": "completed",

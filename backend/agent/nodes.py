@@ -1,15 +1,27 @@
 import ast
 import os
 from typing import Dict, Any
-from langchain_openai import ChatOpenAI
 from langchain_core.output_parsers import StrOutputParser
 from .state import AgentState
 from .prompts import generation_prompt, optimization_prompt
-from ..tools.freqtrade_mcp import run_freqtrade_backtest
+from ..tools.freqtrade_mcp_mock import run_freqtrade_backtest_auto
+from ..llm_config import llm_config
 
-# 初始化 LLM
-# 假设环境变量 OPENAI_API_KEY 已设置，或者使用其他兼容 OpenAI 协议的模型
-llm = ChatOpenAI(model="gpt-4-turbo", temperature=0.2)
+# 初始化不同用途的 LLM 模型
+# 代码生成模型（用于首次生成策略代码）
+code_generator_llm = llm_config.get_code_generator_llm()
+
+# 策略优化模型（用于优化和修复策略代码）
+optimizer_llm = llm_config.get_optimizer_llm()
+
+# 工具调用模型（用于 Agent 决策，后续如果需要函数调用功能可以使用）
+tool_caller_llm = llm_config.get_tool_caller_llm()
+
+# 打印当前配置信息
+print("=" * 60)
+print("LLM 模型配置信息：")
+llm_config.print_config()
+print("=" * 60)
 
 def clean_code(code: str) -> str:
     """清理 LLM 返回的代码，去除 markdown 标记"""
@@ -23,6 +35,7 @@ def strategy_generator(state: AgentState) -> Dict[str, Any]:
     """
     策略生成节点
     根据用户需求或优化反馈生成/修改代码
+    使用不同的专用模型处理代码生成和优化任务
     """
     print("--- Node: Strategy Generator ---")
     user_requirement = state["user_requirement"]
@@ -33,13 +46,13 @@ def strategy_generator(state: AgentState) -> Dict[str, Any]:
     
     # 判断是首次生成还是优化
     if not current_code or iteration_count == 0:
-        # 首次生成
-        print(f"Generating initial strategy for: {user_requirement}")
-        chain = generation_prompt | llm | StrOutputParser()
+        # 首次生成 - 使用代码生成模型
+        print(f"使用代码生成模型生成初始策略: {user_requirement}")
+        chain = generation_prompt | code_generator_llm | StrOutputParser()
         code = chain.invoke({"user_requirement": user_requirement})
     else:
-        # 优化/修复
-        print(f"Optimizing strategy (Iteration {iteration_count})")
+        # 优化/修复 - 使用策略优化模型
+        print(f"使用策略优化模型优化策略 (迭代 {iteration_count})")
         
         feedback = ""
         if error_logs:
@@ -48,7 +61,7 @@ def strategy_generator(state: AgentState) -> Dict[str, Any]:
             metrics = backtest_results.get("metrics", {})
             feedback += f"Backtest Metrics:\n{metrics}\n"
             
-        chain = optimization_prompt | llm | StrOutputParser()
+        chain = optimization_prompt | optimizer_llm | StrOutputParser()
         code = chain.invoke({
             "user_requirement": user_requirement,
             "iteration_count": iteration_count,
@@ -87,9 +100,9 @@ def backtest_executor(state: AgentState) -> Dict[str, Any]:
         print("Skipping backtest due to syntax errors.")
         return {} 
 
-    # 执行回测
+    # 执行回测（自动选择真实回测或模拟回测）
     # 这里为了演示，使用硬编码的 timerange，实际可从 state 或 config 读取
-    result = run_freqtrade_backtest(code, timerange="20230101-20230201")
+    result = run_freqtrade_backtest_auto(code, timerange="20230101-20230201")
     
     if "error" in result:
         print(f"Backtest failed: {result['error']}")

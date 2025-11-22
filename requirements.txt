@@ -1,12 +1,26 @@
-fastapi
-uvicorn
-langchain
-langgraph
-pydantic
-freqtrade
-pandas
-numpy
-langchain-openai
-python-dotenv
-streamlit
-requests
+# Backend API
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+
+# LangChain and AI
+langchain>=0.1.0
+langgraph>=0.0.40
+langchain-openai>=0.0.5
+langchain-anthropic>=0.1.0
+langchain-core>=0.1.0
+
+# Freqtrade and Trading
+freqtrade>=2023.9
+pandas>=2.0.0
+numpy>=1.24.0
+ta-lib>=0.4.28
+
+# Frontend
+streamlit>=1.28.0
+requests>=2.31.0
+
+# Optional but recommended
+aiohttp>=3.9.0
+httpx>=0.25.0

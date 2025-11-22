@@ -1,3 +1,8 @@
+import os
+# 设置环境变量，跳过本地地址的代理（必须在导入 requests 之前）
+os.environ["NO_PROXY"] = "localhost,127.0.0.1,::1"
+os.environ["no_proxy"] = "localhost,127.0.0.1,::1"
+
 import streamlit as st
 import requests
 import json

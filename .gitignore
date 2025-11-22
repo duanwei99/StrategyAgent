@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Environment
+.env
+.env.local
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Freqtrade
+freqtrade_worker/user_data/data/
+freqtrade_worker/user_data/backtest_results/*.json
+freqtrade_worker/user_data/strategies/*.py
+!freqtrade_worker/user_data/strategies/.gitkeep
+
+# Backend cache
+backend/strategies_cache/*.py
+!backend/strategies_cache/.gitkeep
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
+files/

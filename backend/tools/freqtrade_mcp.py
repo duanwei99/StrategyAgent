@@ -7,8 +7,9 @@ from typing import Dict, Any, Optional
 # 定义 Freqtrade 工作目录路径 (相对于项目根目录)
 # 假设当前脚本在 backend/tools/，项目根目录在 ../../
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(CURRENT_DIR))) # D:\StrategyAgent
-FREQTRADE_WORKER_DIR = os.path.join(PROJECT_ROOT, "StrategyAgent", "freqtrade_worker")
+# backend/tools/ -> backend/ -> project_root/
+PROJECT_ROOT = os.path.dirname(os.path.dirname(CURRENT_DIR))
+FREQTRADE_WORKER_DIR = os.path.join(PROJECT_ROOT, "freqtrade_worker")
 STRATEGIES_DIR = os.path.join(FREQTRADE_WORKER_DIR, "user_data", "strategies")
 BACKTEST_RESULTS_DIR = os.path.join(FREQTRADE_WORKER_DIR, "user_data", "backtest_results")
 
@@ -74,8 +75,12 @@ def run_freqtrade_backtest(strategy_code: str, timerange: str = "20230101-202312
         )
 
         if result.returncode != 0:
+            error_msg = f"Backtest execution failed with return code {result.returncode}"
+            print(f"ERROR: {error_msg}")
+            print(f"STDOUT: {result.stdout}")
+            print(f"STDERR: {result.stderr}")
             return {
-                "error": "Backtest execution failed",
+                "error": error_msg,
                 "stdout": result.stdout,
                 "stderr": result.stderr
             }
