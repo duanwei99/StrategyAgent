@@ -1,9 +1,10 @@
 import ast
 import os
+import requests
 from typing import Dict, Any
 from langchain_core.output_parsers import StrOutputParser
 from .state import AgentState
-from .prompts import generation_prompt, optimization_prompt
+from .prompts import generation_prompt, optimization_prompt, generation_with_search_prompt, report_generation_prompt
 from ..tools.freqtrade_mcp_mock import run_freqtrade_backtest_auto
 from ..llm_config import llm_config
 
@@ -31,6 +32,71 @@ def clean_code(code: str) -> str:
         code = code.split("```")[1].split("```")[0]
     return code.strip()
 
+def web_search_node(state: AgentState) -> Dict[str, Any]:
+    """
+    联网搜索节点
+    在首次生成策略前，搜索相关的策略开发最佳实践和建议
+    """
+    print("--- Node: Web Search ---")
+    user_requirement = state["user_requirement"]
+    iteration_count = state["iteration_count"]
+    
+    # 只在首次生成时进行搜索
+    if iteration_count > 0:
+        print("跳过搜索（非首次生成）")
+        return {}
+    
+    # 构建搜索查询
+    search_query = f"freqtrade trading strategy {user_requirement} best practices technical indicators"
+    print(f"搜索查询: {search_query}")
+    
+    try:
+        # 使用 DuckDuckGo 搜索 API (免费且无需API key)
+        search_url = "https://api.duckduckgo.com/"
+        params = {
+            "q": search_query,
+            "format": "json",
+            "no_html": "1",
+            "skip_disambig": "1"
+        }
+        
+        response = requests.get(search_url, params=params, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # 提取摘要和相关主题
+            search_summary = []
+            
+            # 获取抽象摘要
+            if data.get("AbstractText"):
+                search_summary.append(f"摘要: {data['AbstractText']}")
+            
+            # 获取相关主题
+            if data.get("RelatedTopics"):
+                topics = []
+                for topic in data["RelatedTopics"][:5]:  # 只取前5个
+                    if isinstance(topic, dict) and "Text" in topic:
+                        topics.append(topic["Text"])
+                if topics:
+                    search_summary.append("相关信息:\n" + "\n".join(f"- {t}" for t in topics))
+            
+            if search_summary:
+                result_text = "\n\n".join(search_summary)
+                print(f"搜索成功，获得 {len(search_summary)} 条信息")
+                return {"search_results": result_text}
+            else:
+                print("搜索未返回有用信息")
+                return {"search_results": "未找到相关搜索结果"}
+        else:
+            print(f"搜索API返回错误: {response.status_code}")
+            return {"search_results": "搜索服务暂时不可用"}
+            
+    except Exception as e:
+        print(f"搜索出错: {str(e)}")
+        # 搜索失败不影响整体流程，返回空结果继续
+        return {"search_results": f"搜索出错: {str(e)}"}
+
 def strategy_generator(state: AgentState) -> Dict[str, Any]:
     """
     策略生成节点
@@ -43,13 +109,24 @@ def strategy_generator(state: AgentState) -> Dict[str, Any]:
     iteration_count = state["iteration_count"]
     backtest_results = state.get("backtest_results")
     error_logs = state.get("error_logs")
+    search_results = state.get("search_results", "")
     
     # 判断是首次生成还是优化
     if not current_code or iteration_count == 0:
-        # 首次生成 - 使用代码生成模型
+        # 首次生成 - 使用代码生成模型，整合搜索结果
         print(f"使用代码生成模型生成初始策略: {user_requirement}")
-        chain = generation_prompt | code_generator_llm | StrOutputParser()
-        code = chain.invoke({"user_requirement": user_requirement})
+        
+        # 如果有搜索结果，使用包含搜索结果的提示词
+        if search_results:
+            print("整合搜索结果到策略生成中...")
+            chain = generation_with_search_prompt | code_generator_llm | StrOutputParser()
+            code = chain.invoke({
+                "user_requirement": user_requirement,
+                "search_results": search_results
+            })
+        else:
+            chain = generation_prompt | code_generator_llm | StrOutputParser()
+            code = chain.invoke({"user_requirement": user_requirement})
     else:
         # 优化/修复 - 使用策略优化模型
         print(f"使用策略优化模型优化策略 (迭代 {iteration_count})")
@@ -145,3 +222,47 @@ def evaluator(state: AgentState) -> Dict[str, Any]:
     # 注意：graph 路由逻辑通常处理最大迭代退出，这里主要评估质量
     
     return {"is_satisfactory": is_good}
+
+def report_generator(state: AgentState) -> Dict[str, Any]:
+    """
+    报告生成节点
+    根据策略代码和回测结果生成策略报告
+    """
+    print("--- Node: Report Generator ---")
+    user_requirement = state["user_requirement"]
+    current_code = state.get("current_code", "")
+    backtest_results = state.get("backtest_results", {})
+    
+    # 如果没有代码或回测结果，返回空报告
+    if not current_code:
+        print("警告：没有策略代码，无法生成报告")
+        return {"strategy_report": "策略生成失败，无法生成报告。"}
+    
+    # 格式化回测结果
+    if backtest_results and "metrics" in backtest_results:
+        metrics = backtest_results["metrics"]
+        formatted_results = f"""
+总收益率: {metrics.get('profit_total_pct', 0):.2f}%
+总交易次数: {metrics.get('total_trades', 0)}
+胜率: {metrics.get('wins', 0) / max(metrics.get('total_trades', 1), 1) * 100:.2f}%
+平均收益: {metrics.get('profit_mean_pct', 0):.2f}%
+最大回撤: {metrics.get('max_drawdown_pct', 0):.2f}%
+"""
+    else:
+        formatted_results = "回测未成功完成或无结果数据。"
+    
+    try:
+        print("使用代码生成模型生成策略报告...")
+        chain = report_generation_prompt | code_generator_llm | StrOutputParser()
+        report = chain.invoke({
+            "user_requirement": user_requirement,
+            "strategy_code": current_code,
+            "backtest_results": formatted_results
+        })
+        
+        print("策略报告生成成功")
+        return {"strategy_report": report}
+    except Exception as e:
+        error_msg = f"报告生成失败: {str(e)}"
+        print(error_msg)
+        return {"strategy_report": error_msg}

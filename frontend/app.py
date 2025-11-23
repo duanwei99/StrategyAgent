@@ -89,9 +89,17 @@ if generate_btn:
                     st.success("策略生成完成！")
                     
                     # 创建标签页展示不同内容
-                    tab1, tab2, tab3 = st.tabs(["📝 策略代码", "📊 回测结果", "🐛 调试日志"])
+                    tab1, tab2, tab3, tab4 = st.tabs(["📋 策略报告", "📝 策略代码", "📊 回测结果", "🐛 调试日志"])
                     
                     with tab1:
+                        st.subheader("策略分析报告")
+                        strategy_report = data.get("strategy_report")
+                        if strategy_report:
+                            st.markdown(strategy_report)
+                        else:
+                            st.info("未生成策略报告")
+                    
+                    with tab2:
                         st.subheader("生成的 Python 代码")
                         if data.get("final_code"):
                             st.code(data["final_code"], language="python")
@@ -104,7 +112,7 @@ if generate_btn:
                         else:
                             st.info("未生成有效代码")
 
-                    with tab2:
+                    with tab3:
                         st.subheader("回测指标")
                         results = data.get("backtest_results")
                         if results:
@@ -119,7 +127,7 @@ if generate_btn:
                         else:
                             st.info("暂无回测数据")
                             
-                    with tab3:
+                    with tab4:
                         st.subheader("执行日志与错误")
                         logs = data.get("error_logs")
                         if logs:

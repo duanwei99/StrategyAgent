@@ -36,7 +36,7 @@
   },
   
   "exchange": {
-    "name": "binance",
+    "name": "okx",
     "key": "",
     "secret": "",
     "ccxt_config": {},
@@ -95,6 +95,9 @@
   "bot_name": "freqtrade",
   "initial_state": "running",
   "force_entry_enable": false,
+  
+  "dataformat_ohlcv": "json",
+  "dataformat_trades": "json",
   
   "internals": {
     "process_throttle_secs": 5

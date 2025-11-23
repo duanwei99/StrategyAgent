@@ -77,8 +77,30 @@ graph LR
 6. **配置环境**
    在项目根目录创建 `.env` 文件（参考 `env.example`）：
    ```env
-   OPENAI_API_KEY=your_api_key_here
+   # LLM 提供商配置
+   LLM_PROVIDER=doubao
+   DOUBAO_API_KEY=your_api_key_here
+   
+   # 或使用 OpenAI
+   # LLM_PROVIDER=openai
+   # OPENAI_API_KEY=your_api_key_here
    ```
+
+7. **（可选）配置 LangSmith**
+   LangSmith 用于监控和调试 Agent 的运行过程：
+   ```bash
+   # 运行配置检查脚本
+   .\check_langsmith.bat
+   ```
+   
+   在 `.env` 文件中添加：
+   ```env
+   LANGCHAIN_TRACING_V2=true
+   LANGCHAIN_API_KEY=your_langsmith_api_key
+   LANGCHAIN_PROJECT=StrategyAgent
+   ```
+   
+   详细配置指南：[files/LANGSMITH_SETUP_GUIDE.md](files/LANGSMITH_SETUP_GUIDE.md)
 
 ## 🎬 使用方法
 

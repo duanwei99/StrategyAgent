@@ -2,6 +2,7 @@ import subprocess
 import json
 import os
 import shutil
+import sys
 from typing import Dict, Any, Optional
 
 # 定义 Freqtrade 工作目录路径 (相对于项目根目录)
@@ -17,6 +18,151 @@ def ensure_directories():
     """确保必要的目录存在"""
     os.makedirs(STRATEGIES_DIR, exist_ok=True)
     os.makedirs(BACKTEST_RESULTS_DIR, exist_ok=True)
+
+def parse_backtest_stdout(stdout: str, strategy_name: str) -> Dict[str, Any]:
+    """
+    从 Freqtrade 回测的 stdout 输出中解析关键指标
+    
+    Args:
+        stdout: 回测命令的标准输出
+        strategy_name: 策略名称
+        
+    Returns:
+        Dict: 包含解析出的指标
+    """
+    import re
+    
+    metrics = {
+        "total_trades": 0,
+        "profit_total_abs": 0.0,
+        "profit_total_pct": 0.0,
+        "max_drawdown_pct": 0.0,
+        "sharpe": 0.0,
+        "sortino": 0.0,
+        "win_rate": 0.0
+    }
+    
+    # 解析 BACKTESTING REPORT 表格
+    # 示例行: |    TOTAL |    204 |     -0.25 | -153.672 |    -15.37 |  0:40:00 |        26 |
+    # 或者: | BTC/USDT |     98 |     -0.24 |  -71.127 |     -7.11 |  0:44:00 |        14 |
+    lines = stdout.split('\n')
+    
+    # 用于收集所有交易对的数据（以防TOTAL行缺失）
+    pair_trades = []
+    pair_profits_abs = []
+    pair_profits_pct = []
+    pair_wins = []
+    total_wins = 0
+    
+    for i, line in enumerate(lines):
+        # 查找 TOTAL 行（优先）
+        if '|' in line and 'TOTAL' in line.upper():
+            parts = [p.strip() for p in line.split('|') if p.strip()]
+            if len(parts) >= 4:
+                try:
+                    # parts[0] = 'TOTAL'
+                    # parts[1] = trades count
+                    # parts[2] = avg profit %
+                    # parts[3] = total profit (abs)
+                    # parts[4] = total profit %
+                    
+                    if len(parts) > 1:
+                        metrics["total_trades"] = int(parts[1])
+                    if len(parts) > 3:
+                        metrics["profit_total_abs"] = float(parts[3])
+                    if len(parts) > 4:
+                        metrics["profit_total_pct"] = float(parts[4])
+                    
+                    # 如果找到TOTAL行，尝试从后续行获取胜率
+                    for j in range(i+1, min(i+5, len(lines))):
+                        next_line = lines[j]
+                        # 查找胜率百分比（通常在TOTAL行后的几行）
+                        if '%' in next_line and any(char.isdigit() for char in next_line):
+                            match = re.search(r'(\d+\.?\d*)\s*%', next_line)
+                            if match:
+                                metrics["win_rate"] = float(match.group(1))
+                                break
+                except (ValueError, IndexError) as e:
+                    print(f"Warning: Failed to parse TOTAL line: {e}")
+        
+        # 解析单个交易对行（备选方案）
+        elif '|' in line and '/USDT' in line:
+            parts = [p.strip() for p in line.split('|') if p.strip()]
+            if len(parts) >= 5:
+                try:
+                    # parts[0] = pair name (e.g., BTC/USDT)
+                    # parts[1] = trades
+                    # parts[2] = avg profit %
+                    # parts[3] = total profit abs
+                    # parts[4] = total profit %
+                    
+                    trades = int(parts[1])
+                    profit_abs = float(parts[3])
+                    profit_pct = float(parts[4])
+                    
+                    pair_trades.append(trades)
+                    pair_profits_abs.append(profit_abs)
+                    pair_profits_pct.append(profit_pct)
+                    
+                    # 尝试从后续行获取该交易对的胜场数
+                    if i+2 < len(lines):
+                        # 胜率行通常在两行后
+                        win_line = lines[i+2]
+                        if '%' in win_line:
+                            match = re.search(r'(\d+\.?\d*)\s*%', win_line)
+                            if match:
+                                pair_wins.append(float(match.group(1)))
+                    
+                    # 尝试提取胜场数（在同一行或下一行）
+                    if len(parts) > 6:
+                        try:
+                            wins = int(parts[6])
+                            total_wins += wins
+                        except:
+                            pass
+                    
+                except (ValueError, IndexError) as e:
+                    print(f"Warning: Failed to parse pair line: {e}")
+        
+        # 查找其他指标 (Max Drawdown, Sharpe, Sortino 等)
+        # 示例: | Max Drawdown              |  154.45 USDT  |  15.45 %  | ... |
+        if 'Max Drawdown' in line or 'Max drawdown' in line or 'MAX DRAWDOWN' in line:
+            try:
+                # 提取百分比
+                match = re.search(r'(\d+\.?\d*)\s*%', line)
+                if match:
+                    metrics["max_drawdown_pct"] = float(match.group(1))
+            except Exception as e:
+                print(f"Warning: Failed to parse max drawdown: {e}")
+                
+        if 'Sharpe' in line:
+            try:
+                match = re.search(r'Sharpe[^\d]*?([-\d]+\.?\d*)', line)
+                if match:
+                    metrics["sharpe"] = float(match.group(1))
+            except Exception as e:
+                print(f"Warning: Failed to parse Sharpe: {e}")
+                
+        if 'Sortino' in line:
+            try:
+                match = re.search(r'Sortino[^\d]*?([-\d]+\.?\d*)', line)
+                if match:
+                    metrics["sortino"] = float(match.group(1))
+            except Exception as e:
+                print(f"Warning: Failed to parse Sortino: {e}")
+    
+    # 如果没有找到TOTAL行，从单个交易对数据汇总
+    if metrics["total_trades"] == 0 and pair_trades:
+        metrics["total_trades"] = sum(pair_trades)
+        metrics["profit_total_abs"] = sum(pair_profits_abs)
+        # 总盈利百分比需要根据总本金计算，这里简化为加总（不完全准确）
+        metrics["profit_total_pct"] = sum(pair_profits_pct)
+        
+        # 计算平均胜率
+        if pair_wins:
+            metrics["win_rate"] = sum(pair_wins) / len(pair_wins)
+    
+    return metrics
 
 def run_freqtrade_backtest(strategy_code: str, timerange: str = "20230101-20231231", pair_list: list = None) -> Dict[str, Any]:
     """
@@ -60,8 +206,8 @@ def run_freqtrade_backtest(strategy_code: str, timerange: str = "20230101-202312
         "--strategy", strategy_class_name,
         "--config", config_path,
         "--timerange", timerange,
-        "--userdir", os.path.join(FREQTRADE_WORKER_DIR, "user_data"),
-        "--quiet" # 减少日志输出
+        "--userdir", os.path.join(FREQTRADE_WORKER_DIR, "user_data")
+        # 注意：移除了 --quiet 参数，因为某些版本的 freqtrade 不支持此参数
     ]
 
     try:
@@ -71,7 +217,9 @@ def run_freqtrade_backtest(strategy_code: str, timerange: str = "20230101-202312
             cmd, 
             capture_output=True, 
             text=True, 
-            cwd=FREQTRADE_WORKER_DIR # 在 worker 目录下运行
+            cwd=FREQTRADE_WORKER_DIR, # 在 worker 目录下运行
+            timeout=120,  # 设置超时时间为2分钟
+            creationflags=0x00000200 if os.name == 'nt' else 0  # Windows 下创建新进程组 (CREATE_NEW_PROCESS_GROUP)
         )
 
         if result.returncode != 0:
@@ -86,40 +234,21 @@ def run_freqtrade_backtest(strategy_code: str, timerange: str = "20230101-202312
             }
 
         # 4. 解析结果
-        # Freqtrade 通常会生成一个 json 结果文件，或者我们可以解析 stdout 中的表格
-        # 这里为了简单，我们尝试查找最新的回测结果文件
+        # 新版 Freqtrade 将结果保存在 .meta.json 和 .zip 文件中
+        # 我们直接从 stdout 解析表格数据，这样更可靠
         
-        # 查找最新的 .json 结果文件
-        json_files = [f for f in os.listdir(BACKTEST_RESULTS_DIR) if f.endswith(".json")]
-        if not json_files:
-             # 如果没有找到 JSON 文件，尝试从 stdout 解析简要信息 (这里简化处理，返回 stdout)
-             return {
-                 "warning": "No JSON result file found",
-                 "stdout": result.stdout
-             }
+        metrics = parse_backtest_stdout(result.stdout, strategy_class_name)
         
-        # 按修改时间排序，取最新的
-        latest_file = max([os.path.join(BACKTEST_RESULTS_DIR, f) for f in json_files], key=os.path.getmtime)
+        # 查找结果文件路径（用于记录）
+        meta_files = [f for f in os.listdir(BACKTEST_RESULTS_DIR) if f.endswith(".meta.json")]
+        result_path = ""
+        if meta_files:
+            latest_meta = max([os.path.join(BACKTEST_RESULTS_DIR, f) for f in meta_files], key=os.path.getmtime)
+            result_path = latest_meta.replace(".meta.json", ".zip")
         
-        with open(latest_file, "r", encoding="utf-8") as f:
-            backtest_data = json.load(f)
-            
-        # 提取关键指标 (根据 Freqtrade 结果结构)
-        # 结构可能因版本而异，这里做一些防御性编程
-        strategy_stats = backtest_data.get("strategy", {}).get(strategy_class_name, {})
+        metrics["full_result_path"] = result_path
         
-        summary = {
-            "total_trades": strategy_stats.get("total_trades", 0),
-            "profit_total_abs": strategy_stats.get("profit_total_abs", 0),
-            "profit_total_pct": strategy_stats.get("profit_total_pct", 0),
-            "max_drawdown_pct": strategy_stats.get("max_drawdown_abs", 0), # 注意：这里可能是 abs 或 pct，需确认
-            "sharpe": strategy_stats.get("sharpe", 0),
-            "sortino": strategy_stats.get("sortino", 0),
-            "win_rate": strategy_stats.get("win_rate", 0), # 可能需要计算
-            "full_result_path": latest_file
-        }
-        
-        return {"success": True, "metrics": summary, "raw_output": result.stdout[:1000]} # 截断 raw output
+        return {"success": True, "metrics": metrics, "raw_output": result.stdout[:2000]}
 
     except Exception as e:
         return {"error": f"Exception during backtest execution: {str(e)}"}

@@ -54,7 +54,9 @@ async def generate_strategy(request: StrategyRequest):
         "iteration_count": 0,
         "backtest_results": None,
         "error_logs": [],
-        "is_satisfactory": False
+        "is_satisfactory": False,
+        "search_results": None,
+        "strategy_report": None
     }
     
     try:
@@ -71,7 +73,9 @@ async def generate_strategy(request: StrategyRequest):
             "is_satisfactory": final_state.get("is_satisfactory"),
             "iteration_count": final_state.get("iteration_count"),
             "backtest_results": final_state.get("backtest_results"),
-            "error_logs": final_state.get("error_logs")
+            "error_logs": final_state.get("error_logs"),
+            "strategy_report": final_state.get("strategy_report"),
+            "search_results": final_state.get("search_results")
         }
     except Exception as e:
         import traceback

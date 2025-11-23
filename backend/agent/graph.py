@@ -1,6 +1,6 @@
 from langgraph.graph import StateGraph, END
 from .state import AgentState
-from .nodes import strategy_generator, syntax_checker, backtest_executor, evaluator
+from .nodes import strategy_generator, syntax_checker, backtest_executor, evaluator, web_search_node, report_generator
 
 # 定义最大迭代次数常量 (也可以从 state 中读取配置)
 MAX_ITERATIONS = 5
@@ -13,11 +13,12 @@ def route_after_syntax_check(state: AgentState):
 
 def route_after_evaluation(state: AgentState):
     """根据评估结果路由"""
+    # 如果满意或达到最大迭代次数，生成报告
     if state.get("is_satisfactory"):
-        return END
+        return "report_generator"
     
     if state["iteration_count"] >= MAX_ITERATIONS:
-        return END
+        return "report_generator"
         
     return "strategy_generator"
 
@@ -26,13 +27,19 @@ def create_graph():
     workflow = StateGraph(AgentState)
 
     # 添加节点
+    workflow.add_node("web_search", web_search_node)  # 联网搜索节点
     workflow.add_node("strategy_generator", strategy_generator)
     workflow.add_node("syntax_checker", syntax_checker)
     workflow.add_node("backtest_executor", backtest_executor)
     workflow.add_node("evaluator", evaluator)
+    workflow.add_node("report_generator", report_generator)  # 报告生成节点
 
     # 定义边
-    workflow.set_entry_point("strategy_generator")
+    # 工作流从搜索节点开始
+    workflow.set_entry_point("web_search")
+    
+    # 搜索完成后进入策略生成
+    workflow.add_edge("web_search", "strategy_generator")
     
     workflow.add_edge("strategy_generator", "syntax_checker")
     
@@ -53,10 +60,13 @@ def create_graph():
         "evaluator",
         route_after_evaluation,
         {
-            END: END,
+            "report_generator": "report_generator",
             "strategy_generator": "strategy_generator"
         }
     )
+    
+    # 报告生成后结束
+    workflow.add_edge("report_generator", END)
 
     # 编译图
     app = workflow.compile()
