@@ -1,9 +1,13 @@
 from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
 from .state import AgentState
 from .nodes import strategy_generator, syntax_checker, backtest_executor, evaluator, web_search_node, report_generator
 
 # 定义最大迭代次数常量 (也可以从 state 中读取配置)
 MAX_ITERATIONS = 5
+
+# 创建内存检查点保存器，用于管理会话记忆
+checkpointer = MemorySaver()
 
 def route_after_syntax_check(state: AgentState):
     """根据语法检查结果路由"""
@@ -68,6 +72,6 @@ def create_graph():
     # 报告生成后结束
     workflow.add_edge("report_generator", END)
 
-    # 编译图
-    app = workflow.compile()
+    # 编译图，添加 checkpointer 以支持会话记忆
+    app = workflow.compile(checkpointer=checkpointer)
     return app

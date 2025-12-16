@@ -164,14 +164,15 @@ def parse_backtest_stdout(stdout: str, strategy_name: str) -> Dict[str, Any]:
     
     return metrics
 
-def run_freqtrade_backtest(strategy_code: str, timerange: str = "20230101-20231231", pair_list: list = None) -> Dict[str, Any]:
+def run_freqtrade_backtest(strategy_code: str, timerange: str = "20230101-20231231", pair_list: list = None, timeframe: str = "5m") -> Dict[str, Any]:
     """
     执行 Freqtrade 回测
     
     Args:
         strategy_code: 策略的 Python 代码字符串
         timerange: 回测时间范围 (YYYYMMDD-YYYYMMDD)
-        pair_list: 交易对列表 (可选，目前使用 config 中的默认值)
+        pair_list: 交易对列表 (可选，如果提供则只回测这些交易对)
+        timeframe: 时间周期 (例如 "5m", "1h", "1d")
         
     Returns:
         Dict: 包含回测结果摘要和可能的错误信息
@@ -179,14 +180,27 @@ def run_freqtrade_backtest(strategy_code: str, timerange: str = "20230101-202312
     ensure_directories()
     
     # 1. 将策略代码写入文件
+    # 使用临时文件然后原子性重命名，避免文件监控冲突
     strategy_filename = "AI_Strategy.py"
     strategy_class_name = "AI_Strategy" # 假设生成的代码类名固定为 AI_Strategy
     strategy_path = os.path.join(STRATEGIES_DIR, strategy_filename)
+    temp_path = os.path.join(STRATEGIES_DIR, f".{strategy_filename}.tmp")
     
     try:
-        with open(strategy_path, "w", encoding="utf-8") as f:
+        # 先写入临时文件
+        with open(temp_path, "w", encoding="utf-8") as f:
             f.write(strategy_code)
+        # 原子性重命名（Windows 上需要先删除目标文件）
+        if os.path.exists(strategy_path):
+            os.remove(strategy_path)
+        os.rename(temp_path, strategy_path)
     except Exception as e:
+        # 清理临时文件
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except:
+                pass
         return {"error": f"Failed to write strategy file: {str(e)}"}
 
     # 2. 构建 Freqtrade 命令
@@ -206,9 +220,15 @@ def run_freqtrade_backtest(strategy_code: str, timerange: str = "20230101-202312
         "--strategy", strategy_class_name,
         "--config", config_path,
         "--timerange", timerange,
+        "--timeframe", timeframe,
         "--userdir", os.path.join(FREQTRADE_WORKER_DIR, "user_data")
         # 注意：移除了 --quiet 参数，因为某些版本的 freqtrade 不支持此参数
     ]
+    
+    # 如果指定了交易对列表，添加到命令中
+    if pair_list:
+        for pair in pair_list:
+            cmd.extend(["--pairs", pair])
 
     try:
         # 3. 执行命令
@@ -227,8 +247,18 @@ def run_freqtrade_backtest(strategy_code: str, timerange: str = "20230101-202312
             print(f"ERROR: {error_msg}")
             print(f"STDOUT: {result.stdout}")
             print(f"STDERR: {result.stderr}")
+            
+            # 判断是否为代码错误（通过检查 stderr 中是否包含 Python 异常）
+            stderr_lower = result.stderr.lower()
+            is_code_error = any(keyword in stderr_lower for keyword in [
+                'attributeerror', 'syntaxerror', 'importerror', 'nameerror',
+                'typeerror', 'valueerror', 'indentationerror', 'keyerror',
+                'fatal exception', 'traceback', 'file "', 'line '
+            ])
+            
             return {
                 "error": error_msg,
+                "error_type": "code_error" if is_code_error else "execution_error",
                 "stdout": result.stdout,
                 "stderr": result.stderr
             }
@@ -250,5 +280,20 @@ def run_freqtrade_backtest(strategy_code: str, timerange: str = "20230101-202312
         
         return {"success": True, "metrics": metrics, "raw_output": result.stdout[:2000]}
 
+    except subprocess.TimeoutExpired:
+        # 超时错误
+        return {
+            "error": "回测执行超时（超过2分钟）",
+            "error_type": "timeout"
+        }
     except Exception as e:
-        return {"error": f"Exception during backtest execution: {str(e)}"}
+        # 其他异常
+        error_str = str(e)
+        is_code_error = any(keyword in error_str.lower() for keyword in [
+            'attributeerror', 'syntaxerror', 'importerror', 'nameerror',
+            'typeerror', 'valueerror', 'indentationerror', 'keyerror'
+        ])
+        return {
+            "error": f"Exception during backtest execution: {error_str}",
+            "error_type": "code_error" if is_code_error else "execution_error"
+        }

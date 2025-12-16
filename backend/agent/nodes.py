@@ -40,6 +40,12 @@ def web_search_node(state: AgentState) -> Dict[str, Any]:
     print("--- Node: Web Search ---")
     user_requirement = state["user_requirement"]
     iteration_count = state["iteration_count"]
+    has_strategy = state.get("has_strategy", False)
+    
+    # 如果会话中已有策略，说明是优化请求，跳过搜索
+    if has_strategy:
+        print("跳过搜索（会话中已有策略，这是优化请求）")
+        return {}
     
     # 只在首次生成时进行搜索
     if iteration_count > 0:
@@ -111,8 +117,36 @@ def strategy_generator(state: AgentState) -> Dict[str, Any]:
     error_logs = state.get("error_logs")
     search_results = state.get("search_results", "")
     
-    # 判断是首次生成还是优化
-    if not current_code or iteration_count == 0:
+    # 判断是首次生成还是优化（优先根据 has_strategy 判断）
+    has_strategy = state.get("has_strategy", False)
+    
+    if has_strategy and current_code:
+        # 会话中已有策略，这是优化请求 - 使用策略优化模型
+        print(f"使用策略优化模型优化现有策略 (迭代 {iteration_count})")
+        
+        feedback = ""
+        if error_logs:
+            # 如果是代码错误，提供更详细的反馈
+            feedback += f"代码执行错误:\n"
+            for error in error_logs:
+                feedback += f"{error}\n"
+            feedback += "\n请修复代码中的错误并重新生成策略。\n"
+        if backtest_results:
+            metrics = backtest_results.get("metrics", {})
+            feedback += f"Backtest Metrics:\n{metrics}\n"
+        
+        # 如果没有反馈，使用用户的新需求作为优化方向
+        if not feedback:
+            feedback = f"用户新的优化需求: {user_requirement}\n"
+            
+        chain = optimization_prompt | optimizer_llm | StrOutputParser()
+        code = chain.invoke({
+            "user_requirement": user_requirement,
+            "iteration_count": iteration_count,
+            "feedback": feedback,
+            "current_code": current_code
+        })
+    else:
         # 首次生成 - 使用代码生成模型，整合搜索结果
         print(f"使用代码生成模型生成初始策略: {user_requirement}")
         
@@ -127,27 +161,14 @@ def strategy_generator(state: AgentState) -> Dict[str, Any]:
         else:
             chain = generation_prompt | code_generator_llm | StrOutputParser()
             code = chain.invoke({"user_requirement": user_requirement})
-    else:
-        # 优化/修复 - 使用策略优化模型
-        print(f"使用策略优化模型优化策略 (迭代 {iteration_count})")
-        
-        feedback = ""
-        if error_logs:
-            feedback += f"Errors encountered:\n{error_logs}\n"
-        if backtest_results:
-            metrics = backtest_results.get("metrics", {})
-            feedback += f"Backtest Metrics:\n{metrics}\n"
-            
-        chain = optimization_prompt | optimizer_llm | StrOutputParser()
-        code = chain.invoke({
-            "user_requirement": user_requirement,
-            "iteration_count": iteration_count,
-            "feedback": feedback,
-            "current_code": current_code
-        })
 
     clean_c = clean_code(code)
-    return {"current_code": clean_c, "iteration_count": iteration_count + 1}
+    # 标记会话中已有策略
+    return {
+        "current_code": clean_c, 
+        "iteration_count": iteration_count + 1,
+        "has_strategy": True
+    }
 
 def syntax_checker(state: AgentState) -> Dict[str, Any]:
     """
@@ -177,13 +198,77 @@ def backtest_executor(state: AgentState) -> Dict[str, Any]:
         print("Skipping backtest due to syntax errors.")
         return {} 
 
+    # 从 state 中获取回测参数
+    pairs = state.get("pairs", ["BTC/USDT", "ETH/USDT"])
+    timeframe = state.get("timeframe", "5m")
+    timerange = state.get("timerange", "20230101-20231231")
+    
+    print(f"回测参数: pairs={pairs}, timeframe={timeframe}, timerange={timerange}")
+    
     # 执行回测（自动选择真实回测或模拟回测）
-    # 这里为了演示，使用硬编码的 timerange，实际可从 state 或 config 读取
-    result = run_freqtrade_backtest_auto(code, timerange="20230101-20230201")
+    result = run_freqtrade_backtest_auto(
+        code, 
+        timerange=timerange,
+        pair_list=pairs,
+        timeframe=timeframe
+    )
     
     if "error" in result:
-        print(f"Backtest failed: {result['error']}")
-        return {"error_logs": [result["error"]], "backtest_results": None}
+        error_type = result.get("error_type", "execution_error")
+        error_msg = result["error"]
+        
+        # 如果是代码错误，提取详细的错误信息（包括 stderr）反馈给生成器
+        if error_type == "code_error":
+            stderr = result.get("stderr", "")
+            stdout = result.get("stdout", "")
+            # 提取关键错误信息
+            detailed_error = f"{error_msg}\n"
+            if stderr:
+                # 提取完整的 Traceback 和错误信息
+                lines = stderr.split('\n')
+                error_lines = []
+                in_traceback = False
+                last_error_line = -1
+                
+                # 找到 Traceback 开始的位置
+                for i, line in enumerate(lines):
+                    if 'Traceback' in line or 'Fatal exception' in line.lower():
+                        in_traceback = True
+                        error_lines.append(line)
+                    elif in_traceback:
+                        error_lines.append(line)
+                        # 记录最后一个包含 Error 或 Exception 的行
+                        if any(keyword in line for keyword in ['Error', 'Exception', 'AttributeError', 'SyntaxError', 
+                                                               'ImportError', 'NameError', 'TypeError', 'ValueError']):
+                            last_error_line = len(error_lines) - 1
+                        # 如果遇到空行且已经找到了错误信息，可以停止（但继续收集一些上下文）
+                        if not line.strip() and last_error_line >= 0 and len(error_lines) > last_error_line + 3:
+                            break
+                
+                # 如果找到了错误，提取完整的 Traceback 和错误信息
+                if error_lines:
+                    # 如果找到了最后一个错误行，只取到该行及之后2行
+                    if last_error_line >= 0:
+                        detailed_error += "\n详细错误信息:\n" + "\n".join(error_lines[:last_error_line + 3])
+                    else:
+                        # 否则取所有错误行（最多30行）
+                        detailed_error += "\n详细错误信息:\n" + "\n".join(error_lines[:30])
+            print(f"Backtest failed (代码错误): {error_msg}")
+            return {
+                "error_logs": [detailed_error],
+                "backtest_results": None,
+                "is_code_error": True  # 标记为代码错误，用于后续处理
+            }
+        elif error_type == "timeout":
+            print(f"Backtest failed (超时): {error_msg}")
+            return {
+                "error_logs": [f"回测超时: {error_msg}"],
+                "backtest_results": None,
+                "is_timeout": True  # 标记为超时
+            }
+        else:
+            print(f"Backtest failed: {error_msg}")
+            return {"error_logs": [error_msg], "backtest_results": None}
     
     print("Backtest completed successfully.")
     return {"backtest_results": result, "error_logs": []}

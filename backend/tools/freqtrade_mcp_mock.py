@@ -81,7 +81,7 @@ def check_freqtrade_available() -> bool:
         return False
 
 
-def run_freqtrade_backtest_auto(strategy_code: str, timerange: str = "20230101-20231231", pair_list: list = None, force_mock: bool = False) -> Dict[str, Any]:
+def run_freqtrade_backtest_auto(strategy_code: str, timerange: str = "20230101-20231231", pair_list: list = None, timeframe: str = "5m", force_mock: bool = False) -> Dict[str, Any]:
     """
     自动选择真实回测或模拟回测
     
@@ -91,6 +91,7 @@ def run_freqtrade_backtest_auto(strategy_code: str, timerange: str = "20230101-2
         strategy_code: 策略代码
         timerange: 时间范围
         pair_list: 交易对列表
+        timeframe: 时间周期
         force_mock: 强制使用模拟模式
         
     Returns:
@@ -107,10 +108,22 @@ def run_freqtrade_backtest_auto(strategy_code: str, timerange: str = "20230101-2
     
     # 尝试真实回测
     from .freqtrade_mcp import run_freqtrade_backtest
-    result = run_freqtrade_backtest(strategy_code, timerange, pair_list)
+    result = run_freqtrade_backtest(strategy_code, timerange, pair_list, timeframe)
     
-    # 如果真实回测失败，回退到模拟模式
+    # 如果真实回测失败，根据错误类型决定处理方式
     if "error" in result:
+        error_type = result.get("error_type", "execution_error")
+        
+        # 如果是代码错误或超时，不返回模拟结果，直接返回错误信息
+        if error_type in ["code_error", "timeout"]:
+            print(f"[ERROR] 回测失败（{error_type}）: {result.get('error')}")
+            if error_type == "code_error":
+                print("[INFO] 这是代码问题，错误信息将反馈给代码生成模型")
+            elif error_type == "timeout":
+                print("[INFO] 回测超时，不返回模拟结果")
+            return result
+        
+        # 其他执行错误（如数据缺失等），回退到模拟模式
         print(f"[WARNING] 真实回测失败: {result.get('error')}")
         print("[INFO] 回退到模拟模式")
         return run_freqtrade_backtest_mock(strategy_code, timerange, pair_list)

@@ -5,6 +5,9 @@ Binance API 连接测试脚本
 import requests
 import time
 import os
+import dotenv
+
+dotenv.load_dotenv()
 
 print("=" * 70)
 print("Binance API 连接测试")

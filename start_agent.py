@@ -32,13 +32,28 @@ def main():
         "--port", "8000",
     ]
     
-    # Frontend command (Streamlit)
-    frontend_path = root_dir / "frontend" / "app.py"
+    # Frontend command (React/Vite)
+    frontend_dir = root_dir / "frontend" / "ui"
+    # Check if node_modules exists, if not, install dependencies first
+    node_modules_path = frontend_dir / "node_modules"
+    if not node_modules_path.exists():
+        print("Installing frontend dependencies...")
+        import subprocess as sp
+        # Use npm.cmd on Windows, npm on Unix
+        npm_cmd = "npm.cmd" if os.name == "nt" else "npm"
+        install_result = sp.run(
+            [npm_cmd, "install", "--registry=https://registry.npmmirror.com", "--prefer-offline", "--no-audit"],
+            cwd=frontend_dir,
+            env=env
+        )
+        if install_result.returncode != 0:
+            print("Failed to install frontend dependencies")
+            return
+    
+    # Use npm.cmd on Windows, npm on Unix
+    npm_cmd = "npm.cmd" if os.name == "nt" else "npm"
     frontend_cmd = [
-        sys.executable, "-m", "streamlit", "run", 
-        str(frontend_path),
-        "--server.port", "8501",
-        "--server.address", "localhost"
+        npm_cmd, "run", "dev"
     ]
 
     backend_process = None
@@ -52,24 +67,24 @@ def main():
         # Wait a bit for backend to initialize
         time.sleep(3)
         
-        print("Starting Frontend Interface (Streamlit)...")
+        print("Starting Frontend Interface (React/Vite)...")
         # Start frontend in a new process
-        frontend_process = subprocess.Popen(frontend_cmd, cwd=root_dir, env=env)
+        frontend_process = subprocess.Popen(frontend_cmd, cwd=frontend_dir, env=env, shell=True)
         
-        # 等待 Streamlit 启动
-        time.sleep(2)
+        # 等待 React/Vite 启动
+        time.sleep(3)
         
         # 检查进程是否还在运行
         if frontend_process.poll() is not None:
-            print(f"\n⚠️  警告: Streamlit 启动失败！退出代码: {frontend_process.returncode}")
-            print("请手动启动 Streamlit 测试：")
-            print(f"  streamlit run frontend/app.py")
+            print(f"\n⚠️  警告: React 前端启动失败！退出代码: {frontend_process.returncode}")
+            print("请手动启动 React 前端测试：")
+            print(f"  cd frontend/ui && npm run dev")
             backend_process.terminate()
             return
         
         print("\nStrategyAgent is running!")
         print(f"   Backend API: http://127.0.0.1:8000")
-        print(f"   Frontend UI: http://localhost:8501")
+        print(f"   Frontend UI: http://localhost:3000")
         print("\nPress Ctrl+C to stop all services.")
         
         # Keep the script running to monitor processes
