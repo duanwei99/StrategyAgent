@@ -116,6 +116,7 @@ def strategy_generator(state: AgentState) -> Dict[str, Any]:
     backtest_results = state.get("backtest_results")
     error_logs = state.get("error_logs")
     search_results = state.get("search_results", "")
+    factor_query_results = state.get("factor_query_results", "")
     
     # 判断是首次生成还是优化（优先根据 has_strategy 判断）
     has_strategy = state.get("has_strategy", False)
@@ -150,13 +151,20 @@ def strategy_generator(state: AgentState) -> Dict[str, Any]:
         # 首次生成 - 使用代码生成模型，整合搜索结果
         print(f"使用代码生成模型生成初始策略: {user_requirement}")
         
-        # 如果有搜索结果，使用包含搜索结果的提示词
+        # 整合搜索结果和因子查询结果
+        additional_info = []
         if search_results:
-            print("整合搜索结果到策略生成中...")
+            additional_info.append(f"搜索到的相关信息:\n{search_results}")
+        if factor_query_results:
+            print("整合因子查询结果到策略生成中...")
+            additional_info.append(f"推荐的量化因子:\n{factor_query_results}")
+        
+        if additional_info:
+            print("整合搜索结果和因子信息到策略生成中...")
             chain = generation_with_search_prompt | code_generator_llm | StrOutputParser()
             code = chain.invoke({
                 "user_requirement": user_requirement,
-                "search_results": search_results
+                "search_results": "\n\n".join(additional_info)
             })
         else:
             chain = generation_prompt | code_generator_llm | StrOutputParser()

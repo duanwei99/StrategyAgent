@@ -2,6 +2,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from .state import AgentState
 from .nodes import strategy_generator, syntax_checker, backtest_executor, evaluator, web_search_node, report_generator
+from ..factor_library.factor_query_node import factor_query_node
 
 # 定义最大迭代次数常量 (也可以从 state 中读取配置)
 MAX_ITERATIONS = 5
@@ -32,6 +33,7 @@ def create_graph():
 
     # 添加节点
     workflow.add_node("web_search", web_search_node)  # 联网搜索节点
+    workflow.add_node("factor_query", factor_query_node)  # 因子查询节点
     workflow.add_node("strategy_generator", strategy_generator)
     workflow.add_node("syntax_checker", syntax_checker)
     workflow.add_node("backtest_executor", backtest_executor)
@@ -42,8 +44,11 @@ def create_graph():
     # 工作流从搜索节点开始
     workflow.set_entry_point("web_search")
     
-    # 搜索完成后进入策略生成
-    workflow.add_edge("web_search", "strategy_generator")
+    # 搜索完成后进入因子查询
+    workflow.add_edge("web_search", "factor_query")
+    
+    # 因子查询完成后进入策略生成
+    workflow.add_edge("factor_query", "strategy_generator")
     
     workflow.add_edge("strategy_generator", "syntax_checker")
     
