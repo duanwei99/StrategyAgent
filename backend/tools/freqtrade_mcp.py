@@ -4,6 +4,7 @@ import os
 import shutil
 import sys
 from typing import Dict, Any, Optional
+from dotenv import load_dotenv
 
 # 定义 Freqtrade 工作目录路径 (相对于项目根目录)
 # 假设当前脚本在 backend/tools/，项目根目录在 ../../
@@ -231,7 +232,30 @@ def run_freqtrade_backtest(strategy_code: str, timerange: str = "20230101-202312
             cmd.extend(["--pairs", pair])
 
     try:
-        # 3. 执行命令
+        # 3. 加载环境变量（包括代理配置）并更新 config.json
+        env = os.environ.copy()
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(CURRENT_DIR)))
+        env_file = os.path.join(project_root, ".env")
+        
+        if os.path.exists(env_file):
+            load_dotenv(env_file)
+            # 确保代理环境变量被传递
+            for key in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]:
+                value = os.getenv(key)
+                if value:
+                    env[key] = value
+            
+            # 从 .env 读取代理配置（注意：freqtrade 的 ccxt_config.proxy 是 CORS 代理，不应设置为 HTTP 代理）
+            # 我们应该依靠环境变量 HTTP_PROXY/HTTPS_PROXY 来让 aiohttp/requests 自动处理代理
+            # 这里不再修改 config.json 中的 proxy 字段
+            proxy = os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or os.getenv("https_proxy") or os.getenv("http_proxy")
+            if proxy:
+                print(f"[代理配置] 使用环境变量中的代理: {proxy}")
+                print("[提示] 请确保 freqtrade config.json 中的 ccxt_config.proxy 为空字符串")
+            else:
+                print("[代理配置] .env 文件中未找到代理配置")
+        
+        # 4. 执行命令
         print(f"Executing backtest command: {' '.join(cmd)}")
         result = subprocess.run(
             cmd, 
@@ -239,6 +263,7 @@ def run_freqtrade_backtest(strategy_code: str, timerange: str = "20230101-202312
             text=True, 
             cwd=FREQTRADE_WORKER_DIR, # 在 worker 目录下运行
             timeout=120,  # 设置超时时间为2分钟
+            env=env,  # 传递环境变量（包括代理配置）
             creationflags=0x00000200 if os.name == 'nt' else 0  # Windows 下创建新进程组 (CREATE_NEW_PROCESS_GROUP)
         )
 

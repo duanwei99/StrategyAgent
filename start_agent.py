@@ -2,11 +2,50 @@ import subprocess
 import sys
 import time
 import os
+import socket
 from pathlib import Path
 
 # 设置环境变量，跳过本地地址的代理（解决本地服务访问问题）
 os.environ["NO_PROXY"] = "localhost,127.0.0.1"
 os.environ["no_proxy"] = "localhost,127.0.0.1"
+
+def is_port_in_use(host, port):
+    """检查端口是否被占用"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((host, port))
+            return False
+        except OSError:
+            return True
+
+def kill_process_on_port(port):
+    """在 Windows 上关闭占用指定端口的进程"""
+    try:
+        # 查找占用端口的进程
+        result = subprocess.run(
+            ["netstat", "-ano"],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        
+        for line in result.stdout.split('\n'):
+            if f':{port}' in line and 'LISTENING' in line:
+                parts = line.split()
+                if len(parts) >= 5:
+                    pid = parts[-1]
+                    try:
+                        # 终止进程
+                        subprocess.run(["taskkill", "/F", "/PID", pid], check=False)
+                        print(f"已关闭占用端口 {port} 的进程 (PID: {pid})")
+                        time.sleep(1)  # 等待进程关闭
+                        return True
+                    except Exception as e:
+                        print(f"关闭进程失败: {e}")
+        return False
+    except Exception as e:
+        print(f"查找占用端口的进程时出错: {e}")
+        return False
 
 def main():
     # Get the root directory
@@ -60,6 +99,24 @@ def main():
     frontend_process = None
 
     try:
+        # 检查端口 8000 是否被占用
+        backend_port = 8000
+        if is_port_in_use("127.0.0.1", backend_port):
+            print(f"⚠️  端口 {backend_port} 已被占用，尝试关闭占用该端口的进程...")
+            if kill_process_on_port(backend_port):
+                print("等待端口释放...")
+                time.sleep(2)
+                # 再次检查
+                if is_port_in_use("127.0.0.1", backend_port):
+                    print(f"❌ 端口 {backend_port} 仍被占用，请手动关闭占用该端口的进程")
+                    print(f"   运行命令: netstat -ano | findstr :{backend_port}")
+                    return
+            else:
+                print(f"❌ 无法自动关闭占用端口 {backend_port} 的进程")
+                print(f"   请手动运行: netstat -ano | findstr :{backend_port}")
+                print(f"   然后使用 taskkill /F /PID <进程ID> 关闭进程")
+                return
+        
         print("Starting Backend Server (FastAPI)...")
         # Start backend in a new process
         backend_process = subprocess.Popen(backend_cmd, cwd=root_dir, env=env)
@@ -101,10 +158,27 @@ def main():
     except KeyboardInterrupt:
         print("\n\nStopping services...")
     finally:
+        # 使用 taskkill /F /T 强制杀死进程树
         if backend_process:
-            backend_process.terminate()
+            try:
+                if os.name == 'nt':
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(backend_process.pid)], 
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    backend_process.terminate()
+            except Exception as e:
+                print(f"Error killing backend process: {e}")
+                
         if frontend_process:
-            frontend_process.terminate()
+            try:
+                if os.name == 'nt':
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(frontend_process.pid)],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    frontend_process.terminate()
+            except Exception as e:
+                print(f"Error killing frontend process: {e}")
+                
         print("Services stopped.")
 
 if __name__ == "__main__":

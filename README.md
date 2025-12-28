@@ -86,21 +86,19 @@ graph LR
    # OPENAI_API_KEY=your_api_key_here
    ```
 
-7. **（可选）配置 LangSmith**
-   LangSmith 用于监控和调试 Agent 的运行过程：
+7. **（可选）配置 Langfuse**
+   Langfuse 用于监控和调试 Agent 的运行过程：
    ```bash
    # 运行配置检查脚本
-   .\check_langsmith.bat
+   .\scripts\check_langsmith.bat
    ```
    
    在 `.env` 文件中添加：
    ```env
-   LANGCHAIN_TRACING_V2=true
-   LANGCHAIN_API_KEY=your_langsmith_api_key
-   LANGCHAIN_PROJECT=StrategyAgent
+   LANGFUSE_SECRET_KEY=your_langfuse_secret_key
+   LANGFUSE_PUBLIC_KEY=your_langfuse_public_key
+   LANGFUSE_BASE_URL=https://cloud.langfuse.com
    ```
-   
-   详细配置指南：[files/LANGSMITH_SETUP_GUIDE.md](files/LANGSMITH_SETUP_GUIDE.md)
 
 ## 🎬 使用方法
 

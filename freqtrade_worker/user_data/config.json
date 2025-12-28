@@ -39,7 +39,14 @@
     "name": "okx",
     "key": "",
     "secret": "",
-    "ccxt_config": {},
+    "ccxt_config": {
+      "timeout": 30000,
+      "enableRateLimit": true,
+      "proxies": {
+        "http": "http://127.0.0.1:10808",
+        "https": "http://127.0.0.1:10808"
+      }
+    },
     "ccxt_async_config": {},
     "pair_whitelist": [
       "BTC/USDT",

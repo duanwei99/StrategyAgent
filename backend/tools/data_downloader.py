@@ -5,7 +5,9 @@
 import subprocess
 import os
 import sys
+import json
 from typing import List, Optional, Dict, Any
+from dotenv import load_dotenv
 
 # 定义 Freqtrade 工作目录路径
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -61,6 +63,25 @@ def download_market_data(
         cmd.extend(["--pairs", pair])
     
     try:
+        # 加载 .env 文件并更新 config.json 中的代理配置
+        env = os.environ.copy()
+        env_file = os.path.join(PROJECT_ROOT, ".env")
+        
+        if os.path.exists(env_file):
+            load_dotenv(env_file)
+            # 确保代理环境变量被传递
+            for key in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"]:
+                value = os.getenv(key)
+                if value:
+                    env[key] = value
+            
+            proxy = os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY") or os.getenv("https_proxy") or os.getenv("http_proxy")
+            if proxy:
+                print(f"[代理配置] 使用环境变量中的代理: {proxy}")
+                print("[提示] 请确保 freqtrade config.json 中的 ccxt_config.proxy 为空字符串")
+            else:
+                print("[代理配置] .env 文件中未找到代理配置")
+        
         print(f"执行数据下载命令: {' '.join(cmd)}")
         print(f"交易对: {pairs}")
         print(f"时间周期: {timeframe}")
@@ -72,6 +93,7 @@ def download_market_data(
             text=True,
             cwd=FREQTRADE_WORKER_DIR,
             timeout=300,  # 5分钟超时
+            env=env,  # 传递环境变量（包括代理配置）
             creationflags=0x00000200 if os.name == 'nt' else 0  # Windows 下创建新进程组
         )
         

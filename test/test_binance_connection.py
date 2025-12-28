@@ -95,11 +95,10 @@ if success_count == 0:
     print("解决方案:")
     print("  1. 使用 VPN 或代理")
     print("  2. 配置系统代理")
-    print("  3. 使用模拟模式（系统已自动启用）")
     print()
-    print("使用模拟模式:")
-    print("  系统已经自动使用模拟回测模式")
-    print("  可以正常测试所有功能，只是回测结果是模拟的")
+    print("注意:")
+    print("  如果无法连接 Binance API，回测功能将无法正常工作")
+    print("  回测失败时会直接返回异常，不再使用模拟模式")
 
 elif success_count < total_count:
     print("诊断结果: 部分 API 可用")
@@ -110,7 +109,7 @@ elif success_count < total_count:
     print()
     print("建议:")
     print("  1. 尝试配置代理")
-    print("  2. 或使用模拟模式")
+    print("  2. 确保网络连接正常以便回测功能正常工作")
 
 else:
     print("诊断结果: 所有 API 连接正常！")

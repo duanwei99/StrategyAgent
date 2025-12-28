@@ -3,9 +3,14 @@ LLM 模型配置管理模块
 支持 OpenAI、Claude 和豆包（火山引擎）等多种模型提供商的统一配置和切换
 """
 import os
-from typing import Literal, Optional
+from typing import Literal, Optional, List
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
+
+# 尝试导入 Langfuse callback handler
+
+from langfuse.langchain import CallbackHandler as LangfuseCallbackHandler
+LANGFUSE_AVAILABLE = True
 
 # 模型类型定义
 ModelType = Literal["code_generator", "tool_caller", "optimizer"]
@@ -43,6 +48,37 @@ class LLMConfig:
         self.code_temperature = float(os.getenv("CODE_TEMPERATURE", "0.2"))
         self.tool_temperature = float(os.getenv("TOOL_TEMPERATURE", "0.1"))
         self.optimizer_temperature = float(os.getenv("OPTIMIZER_TEMPERATURE", "0.3"))
+        
+        # Langfuse 追踪配置
+        self.langfuse_handler = self._init_langfuse_handler()
+    
+    def _init_langfuse_handler(self):
+        """初始化 Langfuse callback handler"""
+        if not LANGFUSE_AVAILABLE:
+            return None
+        
+        langfuse_secret_key = os.getenv("LANGFUSE_SECRET_KEY", "")
+        langfuse_public_key = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+        
+        # 如果配置了 Langfuse keys，则创建 handler
+        # CallbackHandler 会自动从环境变量读取配置
+        if langfuse_secret_key and langfuse_public_key:
+            try:
+                # Langfuse CallbackHandler 会自动从环境变量读取
+                # LANGFUSE_SECRET_KEY, LANGFUSE_PUBLIC_KEY, LANGFUSE_BASE_URL
+                handler = LangfuseCallbackHandler()
+                return handler
+            except Exception as e:
+                print(f"警告：Langfuse handler 初始化失败: {e}")
+                return None
+        
+        return None
+    
+    def _get_callbacks(self) -> List:
+        """获取 callbacks 列表"""
+        if self.langfuse_handler:
+            return [self.langfuse_handler]
+        return []
     
     def get_llm(self, model_type: ModelType):
         """
@@ -81,7 +117,8 @@ class LLMConfig:
             model=model_map[model_type],
             temperature=temperature_map[model_type],
             api_key=self.openai_api_key,
-            base_url=self.openai_base_url
+            base_url=self.openai_base_url,
+            callbacks=self._get_callbacks()
         )
     
     def _get_claude_llm(self, model_type: ModelType):
@@ -101,7 +138,8 @@ class LLMConfig:
         return ChatAnthropic(
             model=model_map[model_type],
             temperature=temperature_map[model_type],
-            api_key=self.claude_api_key
+            api_key=self.claude_api_key,
+            callbacks=self._get_callbacks()
         )
     
     def _get_doubao_llm(self, model_type: ModelType):
@@ -125,7 +163,8 @@ class LLMConfig:
             model=model_map[model_type],
             temperature=temperature_map[model_type],
             api_key=self.doubao_api_key,
-            base_url=self.doubao_base_url
+            base_url=self.doubao_base_url,
+            callbacks=self._get_callbacks()
         )
     
     def get_code_generator_llm(self):

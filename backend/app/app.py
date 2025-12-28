@@ -27,6 +27,36 @@ def load_env_with_fallback():
 
 load_env_with_fallback()
 
+# 配置 NO_PROXY，排除本地地址和 Langfuse/OpenTelemetry 端点
+# 防止 OpenTelemetry 追踪数据通过代理发送导致超时
+no_proxy_list = [
+    "localhost",
+    "192.168.31.216",
+    "127.0.0.1",
+    "cloud.langfuse.com",
+    "api.smith.langchain.com"
+]
+existing_no_proxy = os.environ.get("NO_PROXY", "") or os.environ.get("no_proxy", "")
+if existing_no_proxy:
+    # 合并现有的 NO_PROXY 配置
+    existing_items = [item.strip() for item in existing_no_proxy.split(",") if item.strip()]
+    no_proxy_list.extend(existing_items)
+    # 去重
+    no_proxy_list = list(dict.fromkeys(no_proxy_list))
+os.environ["NO_PROXY"] = ",".join(no_proxy_list)
+os.environ["no_proxy"] = ",".join(no_proxy_list)
+
+# 抑制 OpenTelemetry 的错误输出（追踪失败不应影响主程序）
+# 设置日志级别，减少 OpenTelemetry 的错误输出
+import logging
+logging.getLogger("opentelemetry").setLevel(logging.ERROR)
+logging.getLogger("opentelemetry.exporter.otlp").setLevel(logging.ERROR)
+logging.getLogger("opentelemetry.sdk._shared_internal").setLevel(logging.ERROR)
+
+# 设置 requests 库的日志级别，减少代理连接错误的输出
+logging.getLogger("requests").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+
 from ..agent.graph import create_graph
 from ..agent.state import AgentState
 from fastapi.middleware.cors import CORSMiddleware
@@ -277,7 +307,8 @@ async def websocket_generate_strategy(websocket: WebSocket):
         def run_graph_with_stream():
             """在后台线程中运行图，将步骤信息放入队列"""
             try:
-                final_state = None
+                # 初始化当前状态为初始状态的副本，用于累积更新
+                current_accumulated_state = initial_state.copy()
                 
                 # 配置 thread_id 用于会话记忆
                 config = {"configurable": {"thread_id": thread_id}}
@@ -286,13 +317,17 @@ async def websocket_generate_strategy(websocket: WebSocket):
                 for event in agent_graph.stream(initial_state, config):
                     # event格式: {node_name: state_update}
                     for node_name, state_update in event.items():
+                        # 更新累积状态
+                        if state_update:
+                            current_accumulated_state.update(state_update)
+
                         # 将步骤信息放入队列
                         step_info = {
                             "type": "step",
                             "step": "node_execution",
                             "node": node_name,
                             "message": f"正在执行: {node_name}",
-                            "iteration": state_update.get("iteration_count", 0)
+                            "iteration": current_accumulated_state.get("iteration_count", 0)
                         }
                         
                         # 根据节点类型添加详细信息
@@ -333,12 +368,8 @@ async def websocket_generate_strategy(websocket: WebSocket):
                             })
                         
                         step_queue.put(step_info)
-                        
-                        # 保存最终状态
-                        if state_update:
-                            final_state = state_update
                 
-                final_state_container["state"] = final_state or initial_state
+                final_state_container["state"] = current_accumulated_state
             except Exception as e:
                 final_state_container["error"] = str(e)
                 import traceback

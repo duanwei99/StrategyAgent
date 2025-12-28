@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    container_name: strategy-agent-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONPATH=/app
+      - PYTHONUNBUFFERED=1
+    env_file:
+      - ../.env
+    volumes:
+      # 挂载代码目录（开发模式，生产环境可移除）
+      - ../backend:/app/backend
+      - ../freqtrade_worker:/app/freqtrade_worker
+      - ../backend/strategies_cache:/app/backend/strategies_cache
+      # 挂载freqtrade数据目录
+      - ../freqtrade_worker/user_data:/app/freqtrade_worker/user_data
+    networks:
+      - strategy-agent-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import requests; requests.get('http://localhost:8000/')\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+    container_name: strategy-agent-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - strategy-agent-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  strategy-agent-network:
+    driver: bridge
+
+volumes:
+  freqtrade_data:
+    driver: local
+

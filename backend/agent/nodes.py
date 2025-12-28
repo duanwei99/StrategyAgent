@@ -1,12 +1,50 @@
 import ast
 import os
+import json
 import requests
-from typing import Dict, Any
+from typing import Dict, Any, List
+from pathlib import Path
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.tools import Tool
+from langchain.agents import create_agent
 from .state import AgentState
-from .prompts import generation_prompt, optimization_prompt, generation_with_search_prompt, report_generation_prompt
+from .prompts import (
+    STRATEGY_GENERATION_SYSTEM_PROMPT,
+    STRATEGY_OPTIMIZATION_SYSTEM_PROMPT,
+    generation_prompt, 
+    optimization_prompt, 
+    generation_with_search_prompt, 
+    report_generation_prompt
+)
 from ..tools.freqtrade_mcp_mock import run_freqtrade_backtest_auto
 from ..llm_config import llm_config
+
+# 确保加载 .env 文件（如果存在）
+try:
+    from dotenv import load_dotenv
+    # 获取项目根目录
+    root_dir = Path(__file__).parent.parent.parent
+    env_file = root_dir / ".env"
+    if env_file.exists():
+        # 尝试使用不同编码加载
+        encodings = ['utf-8', 'utf-8-sig', 'gbk', 'gb2312', 'latin-1']
+        loaded = False
+        for encoding in encodings:
+            try:
+                load_dotenv(env_file, encoding=encoding, override=False)
+                loaded = True
+                break
+            except (UnicodeDecodeError, Exception):
+                continue
+        if not loaded:
+            load_dotenv(env_file, override=False)
+except ImportError:
+    # dotenv 未安装，跳过
+    pass
+except Exception:
+    # 加载失败，继续执行（可能已经在其他地方加载了）
+    pass
 
 # 初始化不同用途的 LLM 模型
 # 代码生成模型（用于首次生成策略代码）
@@ -32,84 +70,313 @@ def clean_code(code: str) -> str:
         code = code.split("```")[1].split("```")[0]
     return code.strip()
 
+def get_web_search_results(query: str) -> List[Dict[str, str]]:
+    """执行联网搜索，返回结构化结果"""
+    
+    # 设置代理端口 10808
+    proxies = {
+        "http": "http://127.0.0.1:10808",
+        "https": "http://127.0.0.1:10808"
+    }
+    
+    print(f"执行搜索: {query}")
+    
+    results_list = []
+    
+    # 方法1：尝试使用 DuckDuckGo HTML 接口（不需要额外库）
+    try:
+        import urllib.parse
+        encoded_query = urllib.parse.quote(query)
+        ddg_url = f"https://html.duckduckgo.com/html/?q={encoded_query}"
+        
+        print(f"尝试 DuckDuckGo HTML 搜索...")
+        response = requests.get(
+            ddg_url,
+            proxies=proxies,
+            timeout=10,
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+        )
+        
+        if response.status_code == 200:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(response.text, 'html.parser')
+            results = soup.find_all('div', class_='result')
+            
+            if results:
+                for i, result in enumerate(results[:5]):
+                    title_elem = result.find('a', class_='result__a')
+                    snippet_elem = result.find('a', class_='result__snippet')
+                    
+                    if title_elem:
+                        title = title_elem.get_text(strip=True)
+                        url = title_elem.get('href', '')
+                        snippet = snippet_elem.get_text(strip=True) if snippet_elem else ''
+                        
+                        # 从 DuckDuckGo 重定向链接中提取真实 URL
+                        if 'uddg=' in url:
+                            try:
+                                from urllib.parse import parse_qs, urlparse
+                                parsed = urlparse(url)
+                                real_url = parse_qs(parsed.query).get('uddg', [''])[0]
+                                if real_url:
+                                    url = urllib.parse.unquote(real_url)
+                            except:
+                                pass
+                        
+                        # 确保 URL 有完整的协议
+                        if url.startswith('//'):
+                            url = 'https:' + url
+                        elif not url.startswith('http'):
+                            url = 'https://' + url
+                        
+                        results_list.append({
+                            "title": title,
+                            "url": url,
+                            "snippet": snippet
+                        })
+                
+                if results_list:
+                    print(f"DuckDuckGo 搜索成功，找到 {len(results_list)} 个结果")
+                    return results_list
+    except Exception as e:
+        print(f"DuckDuckGo HTML 搜索失败: {str(e)}")
+    
+    # 方法2：尝试使用 Bing 搜索（通常更稳定）
+    try:
+        import urllib.parse
+        encoded_query = urllib.parse.quote(query)
+        bing_url = f"https://www.bing.com/search?q={encoded_query}&count=5"
+        
+        print(f"尝试 Bing 搜索...")
+        response = requests.get(
+            bing_url,
+            proxies=proxies,
+            timeout=10,
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+        )
+        
+        if response.status_code == 200:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(response.text, 'html.parser')
+            results = soup.find_all('li', class_='b_algo')
+            
+            if results:
+                for result in results[:5]:
+                    title_elem = result.find('h2')
+                    link_elem = title_elem.find('a') if title_elem else None
+                    snippet_elem = result.find('p')
+                    
+                    if link_elem:
+                        title = link_elem.get_text(strip=True)
+                        url = link_elem.get('href', '')
+                        snippet = snippet_elem.get_text(strip=True) if snippet_elem else ''
+                        
+                        results_list.append({
+                            "title": title,
+                            "url": url,
+                            "snippet": snippet
+                        })
+                
+                if results_list:
+                    print(f"Bing 搜索成功，找到 {len(results_list)} 个结果")
+                    return results_list
+    except Exception as e:
+        print(f"Bing 搜索失败: {str(e)}")
+    
+    # 方法3：回退到 Google 搜索库
+    try:
+        from googlesearch import search
+        print(f"尝试 Google 搜索...")
+        
+        os.environ["HTTP_PROXY"] = "http://127.0.0.1:10808"
+        os.environ["HTTPS_PROXY"] = "http://127.0.0.1:10808"
+        
+        results = search(
+            query, 
+            num_results=5, 
+            advanced=True,
+            lang="en",
+            sleep_interval=2
+        )
+        
+        count = 0
+        for result in results:
+            if count >= 5:
+                break
+            
+            title = getattr(result, 'title', '无标题')
+            description = getattr(result, 'description', '')
+            url = getattr(result, 'url', '')
+            
+            results_list.append({
+                "title": title,
+                "url": url,
+                "snippet": description
+            })
+            count += 1
+        
+        if results_list:
+            print(f"Google 搜索成功，找到 {count} 个结果")
+            return results_list
+            
+    except ImportError:
+        print("未安装 googlesearch-python 库")
+    except Exception as e:
+        print(f"Google 搜索失败: {str(e)}")
+        
+    return []
+
+def perform_web_search(query: str) -> str:
+    """执行联网搜索，返回格式化的字符串结果"""
+    results = get_web_search_results(query)
+    
+    if not results:
+        return "搜索失败: 所有搜索方法都无法获取结果。请检查:\n1. 代理是否正常运行 (127.0.0.1:10808)\n2. 网络连接是否正常\n3. 是否需要安装 beautifulsoup4: pip install beautifulsoup4"
+        
+    search_summary = []
+    for item in results:
+        summary_item = f"标题: {item['title']}\n"
+        if item['snippet']:
+            summary_item += f"摘要: {item['snippet']}\n"
+        summary_item += f"链接: {item['url']}"
+        search_summary.append(summary_item)
+        
+    return "\n\n".join(search_summary)
+
+def fetch_url_content(url: str) -> str:
+    """获取网页内容"""
+    proxies = {
+        "http": "http://127.0.0.1:10808",
+        "https": "http://127.0.0.1:10808"
+    }
+    
+    try:
+        print(f"Fetching content from: {url}")
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(url, headers=headers, proxies=proxies, timeout=10)
+        
+        if response.status_code == 200:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # 移除 script 和 style 标签
+            for script in soup(["script", "style", "nav", "footer", "header"]):
+                script.extract()
+                
+            text = soup.get_text()
+            
+            # 清理空白字符
+            lines = (line.strip() for line in text.splitlines())
+            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+            text = '\n'.join(chunk for chunk in chunks if chunk)
+            
+            return text[:10000] # 限制长度
+            
+    except Exception as e:
+        print(f"Error fetching {url}: {e}")
+    
+    return ""
+
+def summarize_web_content(content: str, query: str) -> str:
+    """使用 LLM 总结网页内容"""
+    if not content:
+        return ""
+        
+    prompt = f"""
+    你是一个专业的量化交易策略专家。请阅读以下网页内容，并提取与用户需求 "{query}" 相关的具体策略逻辑、技术指标、参数设置或代码片段。
+    忽略无关的导航、广告或通用介绍。重点关注如何实现该策略的具体细节。
+    
+    网页内容:
+    {content[:8000]}
+    
+    请总结有用的信息（如果内容不相关，请返回空字符串）:
+    """
+    
+    try:
+        response = code_generator_llm.invoke(prompt)
+        return response.content
+    except Exception as e:
+        print(f"Summarization failed: {e}")
+        return ""
+
+# 定义搜索工具
+search_tool = Tool(
+    name="web_search",
+    func=perform_web_search,
+    description="Useful for searching trading strategy ideas, technical indicators, and best practices online. Input should be a search query."
+)
+
 def web_search_node(state: AgentState) -> Dict[str, Any]:
     """
-    联网搜索节点
-    在首次生成策略前，搜索相关的策略开发最佳实践和建议
+    联网搜索节点 (首次生成前的预搜索)
+    包含深度阅读和内容总结功能
     """
     print("--- Node: Web Search ---")
     user_requirement = state["user_requirement"]
     iteration_count = state["iteration_count"]
     has_strategy = state.get("has_strategy", False)
     
-    # 如果会话中已有策略，说明是优化请求，跳过搜索
-    if has_strategy:
-        print("跳过搜索（会话中已有策略，这是优化请求）")
+    if has_strategy or iteration_count > 0:
+        print("跳过搜索")
         return {}
     
-    # 只在首次生成时进行搜索
-    if iteration_count > 0:
-        print("跳过搜索（非首次生成）")
-        return {}
-    
-    # 构建搜索查询
     search_query = f"freqtrade trading strategy {user_requirement} best practices technical indicators"
-    print(f"搜索查询: {search_query}")
     
-    try:
-        # 使用 DuckDuckGo 搜索 API (免费且无需API key)
-        search_url = "https://api.duckduckgo.com/"
-        params = {
-            "q": search_query,
-            "format": "json",
-            "no_html": "1",
-            "skip_disambig": "1"
-        }
+    # 1. 获取搜索结果
+    search_results_list = get_web_search_results(search_query)
+    
+    if not search_results_list:
+        return {"search_results": "未找到相关搜索结果"}
+    
+    final_summary_parts = []
+    
+    # 2. 遍历结果，提取前 3 个进行深入阅读
+    # 过滤掉 PDF 和非 HTML 内容（虽然 get_web_search_results 已经尽力过滤，但 url 检查更保险）
+    valid_results = [r for r in search_results_list if not r['url'].endswith('.pdf')][:3]
+    
+    for i, item in enumerate(valid_results):
+        url = item['url']
+        title = item['title']
+        snippet = item['snippet']
         
-        response = requests.get(search_url, params=params, timeout=10)
+        print(f"正在深入分析网页 ({i+1}/{len(valid_results)}): {title}")
         
-        if response.status_code == 200:
-            data = response.json()
-            
-            # 提取摘要和相关主题
-            search_summary = []
-            
-            # 获取抽象摘要
-            if data.get("AbstractText"):
-                search_summary.append(f"摘要: {data['AbstractText']}")
-            
-            # 获取相关主题
-            if data.get("RelatedTopics"):
-                topics = []
-                for topic in data["RelatedTopics"][:5]:  # 只取前5个
-                    if isinstance(topic, dict) and "Text" in topic:
-                        topics.append(topic["Text"])
-                if topics:
-                    search_summary.append("相关信息:\n" + "\n".join(f"- {t}" for t in topics))
-            
-            if search_summary:
-                result_text = "\n\n".join(search_summary)
-                print(f"搜索成功，获得 {len(search_summary)} 条信息")
-                return {"search_results": result_text}
-            else:
-                print("搜索未返回有用信息")
-                return {"search_results": "未找到相关搜索结果"}
+        # 获取网页内容
+        content = fetch_url_content(url)
+        detailed_summary = ""
+        
+        if content:
+            # 总结内容
+            print(f"正在生成摘要: {url}")
+            detailed_summary = summarize_web_content(content, user_requirement)
+        
+        # 构建这一条目的完整报告
+        entry = f"### 来源 {i+1}: {title}\n链接: {url}\n"
+        if snippet:
+            entry += f"搜索摘要: {snippet}\n"
+        if detailed_summary:
+            entry += f"**详细内容分析**: \n{detailed_summary}\n"
         else:
-            print(f"搜索API返回错误: {response.status_code}")
-            return {"search_results": "搜索服务暂时不可用"}
+            entry += "(无法获取详细内容或内容不相关)\n"
             
-    except Exception as e:
-        print(f"搜索出错: {str(e)}")
-        # 搜索失败不影响整体流程，返回空结果继续
-        return {"search_results": f"搜索出错: {str(e)}"}
+        final_summary_parts.append(entry)
+        
+    result_text = "\n\n".join(final_summary_parts)
+    
+    print(f"深度搜索分析完成，包含 {len(final_summary_parts)} 个来源")
+    return {"search_results": result_text}
 
 def strategy_generator(state: AgentState) -> Dict[str, Any]:
     """
-    策略生成节点
-    根据用户需求或优化反馈生成/修改代码
-    使用不同的专用模型处理代码生成和优化任务
+    策略生成节点 (支持 ReAct 模式)
     """
-    print("--- Node: Strategy Generator ---")
+    print("--- Node: Strategy Generator (ReAct) ---")
     user_requirement = state["user_requirement"]
     current_code = state.get("current_code")
     iteration_count = state["iteration_count"]
@@ -118,60 +385,68 @@ def strategy_generator(state: AgentState) -> Dict[str, Any]:
     search_results = state.get("search_results", "")
     factor_query_results = state.get("factor_query_results", "")
     
-    # 判断是首次生成还是优化（优先根据 has_strategy 判断）
     has_strategy = state.get("has_strategy", False)
     
+    # 准备工具列表
+    tools = [search_tool]
+    
     if has_strategy and current_code:
-        # 会话中已有策略，这是优化请求 - 使用策略优化模型
+        # 优化模式
         print(f"使用策略优化模型优化现有策略 (迭代 {iteration_count})")
         
         feedback = ""
         if error_logs:
-            # 如果是代码错误，提供更详细的反馈
-            feedback += f"代码执行错误:\n"
-            for error in error_logs:
-                feedback += f"{error}\n"
-            feedback += "\n请修复代码中的错误并重新生成策略。\n"
+            feedback += f"代码执行错误:\n" + "\n".join(error_logs) + "\n请修复代码中的错误并重新生成策略。\n"
         if backtest_results:
             metrics = backtest_results.get("metrics", {})
             feedback += f"Backtest Metrics:\n{metrics}\n"
         
-        # 如果没有反馈，使用用户的新需求作为优化方向
         if not feedback:
             feedback = f"用户新的优化需求: {user_requirement}\n"
             
-        chain = optimization_prompt | optimizer_llm | StrOutputParser()
-        code = chain.invoke({
-            "user_requirement": user_requirement,
-            "iteration_count": iteration_count,
-            "feedback": feedback,
-            "current_code": current_code
-        })
+        # 格式化系统提示词
+        system_message = STRATEGY_OPTIMIZATION_SYSTEM_PROMPT.format(
+            iteration_count=iteration_count,
+            user_requirement=user_requirement,
+            feedback=feedback
+        )
+        
+        # 使用 LangGraph React Agent 进行优化
+        agent_executor = create_agent(optimizer_llm, tools, system_prompt=system_message)
+        
+        # 输入消息包含当前代码
+        inputs = {"messages": [("user", f"Current Code:\n{current_code}")]}
+        
+        response = agent_executor.invoke(inputs)
+        code = response["messages"][-1].content
+        
     else:
-        # 首次生成 - 使用代码生成模型，整合搜索结果
+        # 首次生成模式
         print(f"使用代码生成模型生成初始策略: {user_requirement}")
         
-        # 整合搜索结果和因子查询结果
         additional_info = []
         if search_results:
             additional_info.append(f"搜索到的相关信息:\n{search_results}")
         if factor_query_results:
-            print("整合因子查询结果到策略生成中...")
             additional_info.append(f"推荐的量化因子:\n{factor_query_results}")
+            
+        # 系统提示词直接使用常量
+        system_message = STRATEGY_GENERATION_SYSTEM_PROMPT
         
+        # 构建用户输入消息
+        user_input = f"请根据以下用户需求生成策略代码：\n{user_requirement}"
         if additional_info:
-            print("整合搜索结果和因子信息到策略生成中...")
-            chain = generation_with_search_prompt | code_generator_llm | StrOutputParser()
-            code = chain.invoke({
-                "user_requirement": user_requirement,
-                "search_results": "\n\n".join(additional_info)
-            })
-        else:
-            chain = generation_prompt | code_generator_llm | StrOutputParser()
-            code = chain.invoke({"user_requirement": user_requirement})
+            user_input += "\n\n" + "\n\n".join(additional_info)
+            
+        # 使用 LangGraph React Agent
+        agent_executor = create_agent(code_generator_llm, tools, system_prompt=system_message)
+        
+        inputs = {"messages": [("user", user_input)]}
+        
+        response = agent_executor.invoke(inputs)
+        code = response["messages"][-1].content
 
     clean_c = clean_code(code)
-    # 标记会话中已有策略
     return {
         "current_code": clean_c, 
         "iteration_count": iteration_count + 1,
@@ -213,7 +488,7 @@ def backtest_executor(state: AgentState) -> Dict[str, Any]:
     
     print(f"回测参数: pairs={pairs}, timeframe={timeframe}, timerange={timerange}")
     
-    # 执行回测（自动选择真实回测或模拟回测）
+    # 执行真实回测，如果失败则直接返回异常
     result = run_freqtrade_backtest_auto(
         code, 
         timerange=timerange,
@@ -307,9 +582,9 @@ def evaluator(state: AgentState) -> Dict[str, Any]:
     
     print(f"Evaluation: Profit={profit_pct}%, Trades={trades}")
     
-    # 设定简单的通过标准：盈利 > 0 且 有交易
-    # 实际项目中这里会更复杂
-    is_good = profit_pct > 0 and trades > 0
+    # 设定评估标准：盈利 > 10% 且 有交易
+    # 如果收益率 > 10%，则不需要优化
+    is_good = profit_pct > 10 and trades > 0
     
     # 或者达到最大迭代次数 (在 graph 中通常会检查，但这里也可以标记)
     # 注意：graph 路由逻辑通常处理最大迭代退出，这里主要评估质量
